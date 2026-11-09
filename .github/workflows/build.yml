@@ -1,0 +1,289 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      GODOT_VERSION: 4.4.1.stable
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+
+    steps:
+      - name: Download project
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android components
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Download Godot
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
+          unzip -q Godot_v4.4.1-stable_linux.x86_64.zip
+          chmod +x Godot_v4.4.1-stable_linux.x86_64
+          echo "GODOT=$PWD/Godot_v4.4.1-stable_linux.x86_64" >> $GITHUB_ENV
+
+      - name: Install Godot export templates
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_export_templates.tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/$GODOT_VERSION"
+          mkdir -p templates_temp
+          unzip -q Godot_v4.4.1-stable_export_templates.tpz -d templates_temp
+          cp -a templates_temp/templates/. "$HOME/.local/share/godot/export_templates/$GODOT_VERSION/"
+
+      - name: Create game project
+        run: |
+          mkdir -p build
+
+          cat > project.godot <<'EOF'
+          config_version=5
+
+          [application]
+          config/name="Симулятор перекупа"
+          run/main_scene="res://main.tscn"
+          config/features=PackedStringArray("4.4")
+
+          [display]
+          window/size/viewport_width=720
+          window/size/viewport_height=1280
+          window/stretch/mode="canvas_items"
+
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          EOF
+
+          cat > main.tscn <<'EOF'
+          [gd_scene load_steps=2 format=3]
+
+          [ext_resource type="Script" path="res://main.gd" id="1"]
+
+          [node name="Main" type="Control"]
+          layout_mode = 3
+          anchors_preset = 15
+          anchor_right = 1.0
+          anchor_bottom = 1.0
+          grow_horizontal = 2
+          grow_vertical = 2
+          script = ExtResource("1")
+          EOF
+
+          cat > main.gd <<'EOF'
+          extends Control
+
+          var balance: int = 30000
+          var inventory: Array = []
+          var balance_label: Label
+          var inventory_label: Label
+          var market_box: VBoxContainer
+
+          var phones = [
+              {"name": "Айфон 11", "price": 12000, "sale": 16000},
+              {"name": "Айфон 12", "price": 17000, "sale": 22000},
+              {"name": "Айфон 13", "price": 23000, "sale": 29000},
+              {"name": "Самсунг S22", "price": 19000, "sale": 25000},
+              {"name": "Редми Note 13", "price": 9000, "sale": 12000},
+              {"name": "Пиксель 7", "price": 15000, "sale": 20000}
+          ]
+
+          func _ready():
+              _load_save()
+              _create_interface()
+              _refresh()
+
+          func _create_interface():
+              var background = ColorRect.new()
+              background.color = Color("#10151d")
+              background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              add_child(background)
+
+              var root = VBoxContainer.new()
+              root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              root.offset_left = 24
+              root.offset_right = -24
+              root.offset_top = 35
+              root.offset_bottom = -35
+              root.add_theme_constant_override("separation", 16)
+              add_child(root)
+
+              var title = Label.new()
+              title.text = "СИМУЛЯТОР ПЕРЕКУПА"
+              title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+              title.add_theme_font_size_override("font_size", 25)
+              root.add_child(title)
+
+              balance_label = Label.new()
+              balance_label.add_theme_font_size_override("font_size", 23)
+              root.add_child(balance_label)
+
+              var market_title = Label.new()
+              market_title.text = "РЫНОК ТЕЛЕФОНОВ"
+              market_title.add_theme_font_size_override("font_size", 21)
+              root.add_child(market_title)
+
+              var scroll = ScrollContainer.new()
+              scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+              root.add_child(scroll)
+
+              market_box = VBoxContainer.new()
+              market_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+              market_box.add_theme_constant_override("separation", 12)
+              scroll.add_child(market_box)
+
+              for i in range(phones.size()):
+                  var phone = phones[i]
+                  var button = Button.new()
+                  button.text = "%s\nЦена: %d ₽ | Продажа: %d ₽" % [
+                      phone["name"],
+                      phone["price"],
+                      phone["sale"]
+                  ]
+                  button.custom_minimum_size = Vector2(0, 85)
+                  button.add_theme_font_size_override("font_size", 17)
+                  button.pressed.connect(_buy_phone.bind(i))
+                  market_box.add_child(button)
+
+              inventory_label = Label.new()
+              inventory_label.add_theme_font_size_override("font_size", 17)
+              root.add_child(inventory_label)
+
+              var sell_button = Button.new()
+              sell_button.text = "ПРОДАТЬ ПЕРВЫЙ ТЕЛЕФОН"
+              sell_button.custom_minimum_size = Vector2(0, 65)
+              sell_button.add_theme_font_size_override("font_size", 18)
+              sell_button.pressed.connect(_sell_first)
+              root.add_child(sell_button)
+
+          func _buy_phone(index: int):
+              var phone = phones[index]
+              if balance < phone["price"]:
+                  return
+
+              balance -= phone["price"]
+              inventory.append(phone.duplicate())
+              _save_game()
+              _refresh()
+
+          func _sell_first():
+              if inventory.is_empty():
+                  return
+
+              var phone = inventory.pop_front()
+              balance += int(phone["sale"])
+              _save_game()
+              _refresh()
+
+          func _refresh():
+              balance_label.text = "Баланс: %d ₽" % balance
+
+              if inventory.is_empty():
+                  inventory_label.text = "Инвентарь: пусто"
+              else:
+                  var names = []
+                  for phone in inventory:
+                      names.append(phone["name"])
+                  inventory_label.text = "Инвентарь:\n" + "\n".join(names)
+
+          func _save_game():
+              var config = ConfigFile.new()
+              config.set_value("game", "balance", balance)
+              config.set_value("game", "inventory", inventory)
+              config.save("user://save.cfg")
+
+          func _load_save():
+              var config = ConfigFile.new()
+              if config.load("user://save.cfg") == OK:
+                  balance = int(config.get_value("game", "balance", 30000))
+                  inventory = config.get_value("game", "inventory", [])
+          EOF
+
+      - name: Configure Android signing
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "ERROR: Android signing secrets are missing."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/signing"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$HOME/signing/release-key.jks"
+
+          if [ ! -s "$HOME/signing/release-key.jks" ]; then
+            echo "ERROR: Keystore file is empty."
+            exit 1
+          fi
+
+      - name: Create Android export settings
+        run: |
+          cat > export_presets.cfg <<EOF
+          [preset.0]
+          name="Android"
+          platform="Android"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/Simulyator-perekupa.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          gradle_build/export_format=0
+          gradle_build/min_sdk=23
+          gradle_build/target_sdk=35
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          package/unique_name="ru.perekup.telefonov"
+          package/name="Симулятор перекупа"
+          version/code=1
+          version/name="1.0.0"
+          screen/immersive_mode=true
+          screen/orientation=1
+          permissions/internet=true
+          keystore/debug=""
+          keystore/debug_user=""
+          keystore/debug_password=""
+          keystore/release="$HOME/signing/release-key.jks"
+          keystore/release_user="perekup-release"
+          keystore/release_password="$ANDROID_KEYSTORE_PASSWORD"
+          EOF
+
+      - name: Import Godot project
+        run: |
+          "$GODOT" --headless --editor --path . --quit
+
+      - name: Build signed APK
+        run: |
+          "$GODOT" --headless --path . --export-release "Android" build/Simulyator-perekupa.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Simulyator-perekupa-Android-APK
+          path: build/Simulyator-perekupa.apk
+          if-no-files-found: error
