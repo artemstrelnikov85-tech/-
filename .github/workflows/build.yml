@@ -30,6 +30,8 @@ jobs:
 
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android components
         run: |
@@ -40,7 +42,7 @@ jobs:
           wget -q https://github.com/godotengine/godot/releases/download/4.4.1-stable/Godot_v4.4.1-stable_linux.x86_64.zip
           unzip -q Godot_v4.4.1-stable_linux.x86_64.zip
           chmod +x Godot_v4.4.1-stable_linux.x86_64
-          echo "GODOT=$PWD/Godot_v4.4.1-stable_linux.x86_64" >> $GITHUB_ENV
+          echo "GODOT=$PWD/Godot_v4.4.1-stable_linux.x86_64" >> "$GITHUB_ENV"
 
       - name: Install Godot export templates
         run: |
